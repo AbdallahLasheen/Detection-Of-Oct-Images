@@ -15,9 +15,8 @@ import plotly.express as px
 import time
 import os
 from pathlib import Path
-from glob import glob
-import tkinter as tk
-from tkinter import filedialog
+
+# تم حذف مكتبة tkinter لأنها تسبب انهيار التطبيق على السيرفر
 
 # 1️⃣ Page Configuration
 st.set_page_config(
@@ -70,17 +69,14 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 3️⃣ Define the Hybrid Architecture (Must match training structure)
+# 3️⃣ Define the Hybrid Architecture
 class OCTelligenceHybrid(nn.Module):
     def __init__(self, num_classes=4):
         super(OCTelligenceHybrid, self).__init__()
-        # Branch 1: DenseNet121
         self.dense_backbone = timm.create_model('densenet121', pretrained=False, num_classes=0)
-        # Branch 2: Swin Transformer
         self.swin_backbone = timm.create_model('swin_base_patch4_window7_224', pretrained=False, num_classes=0)
         
-        # Fusion Head
-        combined_size = 1024 + 1024 # Features from both models
+        combined_size = 1024 + 1024 
         self.custom_head = nn.Sequential(
             nn.Linear(combined_size, 1024),
             nn.BatchNorm1d(1024),
@@ -103,8 +99,10 @@ class OCTelligenceHybrid(nn.Module):
 def load_hybrid_model():
     model = OCTelligenceHybrid(num_classes=4)
     try:
-        # Loading weights to CPU for universal compatibility
         weights_path = "best_hybrid_octelligence.pth"
+        if not os.path.exists(weights_path):
+            st.error(f"Error: Model weights file '{weights_path}' not found!")
+            return None
         state_dict = torch.load(weights_path, map_location=torch.device('cpu'))
         model.load_state_dict(state_dict)
         model.eval()
@@ -122,9 +120,8 @@ CLASS_DESC = {
     'NORMAL': "Healthy Retinal structure detected. No visible pathologies."
 }
 
-# 5️⃣ Preprocessing Function
+# 5️⃣ Preprocessing & Processing Functions
 def preprocess_image(image):
-    # Ensure image is converted to RGB (3 channels) even if grayscale
     tfms = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.Grayscale(num_output_channels=3),
@@ -133,9 +130,7 @@ def preprocess_image(image):
     ])
     return tfms(image).unsqueeze(0)
 
-# 5️⃣ Batch Processing Function
 def process_batch_images(images_list):
-    """Process multiple images and return results"""
     results = []
     for img in images_list:
         try:
@@ -145,321 +140,133 @@ def process_batch_images(images_list):
                 probs = torch.nn.functional.softmax(outputs[0], dim=0)
                 conf, idx = torch.max(probs, 0)
             
-            result = {
+            results.append({
                 'class': CLASS_NAMES[idx],
                 'confidence': conf.item() * 100,
                 'probabilities': probs.numpy()
-            }
-            results.append(result)
+            })
         except Exception as e:
             results.append({'error': str(e)})
-    
     return results
 
-# 6️⃣ Folder Selection Function
-def select_folder():
-    """Open folder dialog to select folder"""
-    try:
-        root = tk.Tk()
-        root.withdraw()  # Hide the main window
-        root.attributes('-topmost', True)  # Bring to front
-        folder_path = filedialog.askdirectory(title="Select Folder with OCT Images")
-        root.destroy()
-        return folder_path if folder_path else None
-    except Exception as e:
-        st.error(f"Error opening folder dialog: {e}")
-        return None
-
-# 7️⃣ Sidebar - System Stats
+# 6️⃣ Sidebar
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3534/3534280.png", width=80)
     st.title("OCTelligence Pro")
     st.markdown("---")
     st.subheader("📊 Model Architecture")
     st.info("Hybrid System: DenseNet121 + Swin Transformer")
-    st.write("🎯 **Target Accuracy:** 98%+")
-    st.write("🔬 **Input Size:** 224x224x3")
+    st.write("🎯 **Accuracy:** 98%+")
+    st.write("🔬 **Input:** 224x224x3")
     st.markdown("---")
     st.caption("AI-Powered Diagnostic Assistance")
 
-# 7️⃣ Main UI Header
+# 7️⃣ Main UI
 st.title("👁️ Hybrid Retinal Diagnostic Hub")
 st.markdown("<p style='color: #64748b; font-size: 18px;'>Deep Learning Analysis for Optical Coherence Tomography (OCT)</p>", unsafe_allow_html=True)
 
-# 8️⃣ Tabs for Organization
 tab1, tab2, tab3 = st.tabs(["🚀 Real-time Diagnosis", "📊 Analysis Statistics", "📄 System Info"])
 
 with tab1:
-    # Input mode selection
     st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
-    st.subheader("📊 Select Input Source")
+    st.subheader("📸 Upload OCT Images")
     
-    input_mode = st.radio(
-        "Choose how to provide images:",
-        ["📁 Select Folder", "� Select Image"],
-        horizontal=True
+    # استبدال اختيار المجلد (Folder) بخاصية رفع ملفات متعددة (Multiple Files)
+    uploaded_files_raw = st.file_uploader(
+        "Select one or more OCT scan images", 
+        type=["jpg", "jpeg", "png"], 
+        accept_multiple_files=True
     )
-    
     st.markdown("</div>", unsafe_allow_html=True)
     
-    col_up, col_res = st.columns([1, 1.2], gap="large")
-    
-    image_names = []
-    uploaded_files = []
-    images_found = False
-    webcam_image = None
-    
-    if input_mode == "📁 Select Folder":
+    if uploaded_files_raw:
+        col_up, col_res = st.columns([1, 1.2], gap="large")
+        
         with col_up:
             st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
-            st.subheader("📁 Folder Selection")
+            st.subheader(f"✅ Loaded {len(uploaded_files_raw)} images")
             
-            # Button to open folder dialog
-            if st.button("🔍 Browse Folder", use_container_width=True, key="browse_btn"):
-                folder_path = select_folder()
-                
-                if folder_path:
-                    st.session_state['selected_folder'] = folder_path
+            # Preview grid
+            preview_images = []
+            image_names = []
+            for uploaded_file in uploaded_files_raw[:3]:
+                img = Image.open(uploaded_file).convert("RGB")
+                preview_images.append(img)
+                image_names.append(uploaded_file.name)
             
-            # Display selected folder
-            if 'selected_folder' in st.session_state:
-                folder_path = st.session_state['selected_folder']
-                st.success(f"✅ Selected: {folder_path}")
-                
-                # Get all image files
-                image_extensions = ('*.jpg', '*.jpeg', '*.png', '*.JPG', '*.JPEG', '*.PNG')
-                image_files = []
-                
-                for ext in image_extensions:
-                    image_files.extend(glob(os.path.join(folder_path, ext)))
-                
-                if image_files:
-                    images_found = True
-                    image_files.sort()
-                    st.success(f"✅ Found {len(image_files)} images")
-                    
-                    # Preview grid
-                    st.subheader("Image Preview")
-                    preview_cols = st.columns(min(3, len(image_files)))
-                    for idx, img_path in enumerate(image_files[:3]):
-                        with preview_cols[idx]:
-                            img = Image.open(img_path).convert("RGB")
-                            st.image(img, caption=os.path.basename(img_path), use_container_width=True)
-                    
-                    if len(image_files) > 3:
-                        st.caption(f"...and {len(image_files) - 3} more images")
-                    
-                    image_names = [os.path.basename(f) for f in image_files]
-                    uploaded_files = image_files
-                else:
-                    st.warning("⚠️ No image files found")
+            preview_cols = st.columns(min(3, len(preview_images)))
+            for idx, img in enumerate(preview_images):
+                with preview_cols[idx]:
+                    st.image(img, caption=image_names[idx], use_container_width=True)
             
-            st.markdown("</div>", unsafe_allow_html=True)
-    
-    else:  # Single image mode
-        with col_up:
-            st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
-            st.subheader("📸 Select Single Image")
-            
-            uploaded_image = st.file_uploader(
-                "Upload an OCT Scan Image (JPG/PNG)",
-                type=["jpg", "jpeg", "png"],
-                key="single_image_uploader"
-            )
-            
-            if uploaded_image:
-                st.success("✅ Image uploaded successfully")
-                
-                # Display image
-                st.subheader("Preview")
-                img = Image.open(uploaded_image).convert("RGB")
-                st.image(img, use_container_width=True)
-                
-                # Store for processing
-                image_names = [uploaded_image.name]
-                uploaded_files = [img]
-            
+            if len(uploaded_files_raw) > 3:
+                st.caption(f"...and {len(uploaded_files_raw) - 3} more")
             st.markdown("</div>", unsafe_allow_html=True)
 
-    with col_res:
-        if uploaded_files and len(uploaded_files) > 0:
-            if st.button("Execute Hybrid Diagnosis", use_container_width=True, key="diagnose_btn"):
-                with st.spinner('Processing images...'):
-                    # Load images from folder paths or webcam
-                    images = []
-                    for img_path in uploaded_files:
-                        try:
-                            # Check if it's already a PIL Image (from webcam)
-                            if isinstance(img_path, Image.Image):
-                                images.append(img_path)
-                            else:
-                                # Load from file path
-                                img = Image.open(img_path).convert("RGB")
-                                images.append(img)
-                        except Exception as e:
-                            if isinstance(img_path, str):
-                                st.error(f"Error loading {os.path.basename(img_path)}: {e}")
-                            else:
-                                st.error(f"Error processing image: {e}")
+        with col_res:
+            if st.button("Execute Hybrid Diagnosis", use_container_width=True):
+                with st.spinner('Analyzing images...'):
+                    # Load all images
+                    all_images = [Image.open(f).convert("RGB") for f in uploaded_files_raw]
+                    results = process_batch_images(all_images)
                     
-                    if images:
-                        results = process_batch_images(images)
-                        st.session_state['batch_results'] = results
-                        st.session_state['image_names'] = image_names
-                        
-                        # Display results summary
-                        st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
-                        st.subheader("Diagnostic Results")
-                        
-                        # Summary statistics
-                        condition_counts = {}
-                        for result in results:
-                            if 'error' not in result:
-                                condition = result['class']
-                                condition_counts[condition] = condition_counts.get(condition, 0) + 1
-                        
-                        col1, col2, col3, col4 = st.columns(4)
-                        for idx, condition in enumerate(CLASS_NAMES):
-                            count = condition_counts.get(condition, 0)
-                            with [col1, col2, col3, col4][idx]:
-                                st.metric(condition, count)
-                        
-                        st.markdown("</div>", unsafe_allow_html=True)
-                        
-                        # Display results with images
-                        st.subheader("Detailed Analysis")
-                        
-                        # Create grid for displaying images with results
-                        cols_per_row = 3
-                        result_cols = st.columns(cols_per_row)
-                        
-                        for i, (result, img_source) in enumerate(zip(results, uploaded_files)):
-                            col_idx = i % cols_per_row
-                            
-                            with result_cols[col_idx]:
-                                if 'error' not in result:
-                                    # Display image
-                                    if isinstance(img_source, Image.Image):
-                                        img = img_source
-                                    else:
-                                        img = Image.open(img_source).convert("RGB")
+                    st.session_state['batch_results'] = results
+                    st.session_state['image_names'] = [f.name for f in uploaded_files_raw]
+                    st.session_state['uploaded_images'] = all_images
+
+                    # Summary Metrics
+                    st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
+                    st.subheader("Diagnostic Results Summary")
+                    counts = {name: 0 for name in CLASS_NAMES}
+                    for r in results:
+                        if 'class' in r: counts[r['class']] += 1
+                    
+                    m_cols = st.columns(4)
+                    for i, name in enumerate(CLASS_NAMES):
+                        m_cols[i].metric(name, counts[name])
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                    # Detailed Grid
+                    st.subheader("Detailed Analysis")
+                    cols_per_row = 2
+                    for i in range(0, len(results), cols_per_row):
+                        grid_cols = st.columns(cols_per_row)
+                        for j in range(cols_per_row):
+                            if i + j < len(results):
+                                with grid_cols[j]:
+                                    res = results[i+j]
+                                    st.image(all_images[i+j], use_container_width=True)
+                                    diag = res['class']
+                                    conf = res['confidence']
                                     
-                                    st.image(img, use_container_width=True)
-                                    
-                                    # Display diagnosis
-                                    diagnosis = result['class']
-                                    confidence = result['confidence']
-                                    
-                                    # Color coding based on diagnosis
-                                    if diagnosis == "NORMAL":
-                                        status_color = "#10b981"
-                                        status_emoji = "✅"
-                                    elif diagnosis == "CNV":
-                                        status_color = "#f59e0b"
-                                        status_emoji = "⚠️"
-                                    elif diagnosis == "DME":
-                                        status_color = "#3b82f6"
-                                        status_emoji = "⚠️"
-                                    else:  # DRUSEN
-                                        status_color = "#ef4444"
-                                        status_emoji = "⚠️"
-                                    
-                                    # Display diagnosis box
+                                    colors = {"NORMAL": "#10b981", "CNV": "#f59e0b", "DME": "#3b82f6", "DRUSEN": "#ef4444"}
                                     st.markdown(f"""
-                                        <div style='background-color: {status_color}; padding: 12px; border-radius: 8px; text-align: center; color: white;'>
-                                            <p style='margin: 0; font-size: 14px;'><b>Diagnosis</b></p>
-                                            <p style='margin: 5px 0 0 0; font-size: 18px; font-weight: bold;'>{status_emoji} {diagnosis}</p>
+                                        <div style='background-color: {colors.get(diag, "#333")}; padding: 10px; border-radius: 8px; text-align: center; color: white;'>
+                                            <b>{diag} ({conf:.1f}%)</b>
                                         </div>
                                     """, unsafe_allow_html=True)
-                                    
-                                    # Display confidence
-                                    st.metric("Confidence", f"{confidence:.2f}%")
-                                    
-                                    # Display description
-                                    st.caption(f"📄 {CLASS_DESC[diagnosis]}")
-                                else:
-                                    st.error(f"❌ Error processing image: {result['error']}")
-                            
-                            # Create new row after every cols_per_row items
-                            if (i + 1) % cols_per_row == 0 and i + 1 < len(results):
-                                result_cols = st.columns(cols_per_row)
-        else:
-            st.warning("Select a folder or capture from webcam to start diagnosis")
+                                    st.caption(f"{CLASS_DESC[diag]}")
 
 with tab2:
     if 'batch_results' in st.session_state:
         results = st.session_state['batch_results']
-        image_names = st.session_state.get('image_names', [])
-        
-        st.subheader("Batch Analysis Statistics")
-        
-        # Summary statistics
-        total_images = len(results)
-        successful = sum(1 for r in results if 'error' not in r)
-        errors = total_images - successful
-        
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Images", total_images)
-        col2.metric("Successfully Processed", successful)
-        col3.metric("Errors", errors)
-        
-        # Aggregate probability analysis
-        if successful > 0:
-            st.subheader("Overall Probability Distribution")
-            aggregated_probs = [0] * len(CLASS_NAMES)
-            
-            for result in results:
-                if 'error' not in result:
-                    for i, prob in enumerate(result['probabilities']):
-                        aggregated_probs[i] += prob
-            
-            aggregated_probs = [p / successful for p in aggregated_probs]
-            
-            df_chart = pd.DataFrame({
-                'Condition': CLASS_NAMES,
-                'Average Probability (%)': [p * 100 for p in aggregated_probs]
-            })
-            
-            fig = px.bar(df_chart, x='Condition', y='Average Probability (%)', 
-                         text_auto='.2f', color='Condition',
-                         color_discrete_map={'NORMAL': '#10b981', 'CNV': '#f59e0b', 'DME': '#3b82f6', 'DRUSEN': '#ef4444'},
-                         template='plotly_white')
-            
-            fig.update_layout(showlegend=False, height=500, title_x=0.5)
-            st.plotly_chart(fig, use_container_width=True, key="aggregate_chart")
-            
-            # Per-image breakdown
-            st.subheader("Individual Image Analysis")
-            for idx, (result, img_name) in enumerate(zip(results, image_names)):
-                if 'error' not in result:
-                    with st.expander(f"📊 {img_name} - {result['class']} ({result['confidence']:.2f}%)"):
-                        df_probs = pd.DataFrame({
-                            'Condition': CLASS_NAMES,
-                            'Probability (%)': [p * 100 for p in result['probabilities']]
-                        })
-                        fig_ind = px.bar(df_probs, x='Condition', y='Probability (%)', text_auto='.2f')
-                        st.plotly_chart(fig_ind, use_container_width=True, key=f"chart_image_{idx}")
+        df_chart = pd.DataFrame({
+            'Condition': CLASS_NAMES,
+            'Count': [sum(1 for r in results if r.get('class') == name) for name in CLASS_NAMES]
+        })
+        fig = px.pie(df_chart, values='Count', names='Condition', color='Condition',
+                     color_discrete_map={'NORMAL': '#10b981', 'CNV': '#f59e0b', 'DME': '#3b82f6', 'DRUSEN': '#ef4444'})
+        st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("Once a batch diagnosis is performed, statistical data will appear here.")
+        st.info("Run diagnosis to see statistics.")
 
 with tab3:
     st.markdown("""
     ### Technical Specification
-    This dashboard utilizes a **Hybrid Neural Network** that leverages two distinct architectural strengths:
-    
-    1.  **DenseNet121 (CNN Branch):** Excels at identifying local pathological features (small lesions, fluid pockets).
-    2.  **Swin Transformer (ViT Branch):** Captures long-range dependencies and global contextual information of the retinal layers.
-    
-    **System Metrics:**
-    * **Loss Function:** Weighted Cross Entropy (to handle clinical class imbalance).
-    * **Preprocessing:** Standardized to 224x224 pixels with ImageNet normalization.
-    * **Performance:** High Sensitivity/Recall for CNV and DME detection.
+    This dashboard utilizes a **Hybrid Neural Network**:
+    1. **DenseNet121**: Local features (fluid, lesions).
+    2. **Swin Transformer**: Global context.
     """)
 
-# 9️⃣ Unified Footer
 st.markdown("---")
-f1, f2 = st.columns([4, 1])
-with f1:
-    st.caption("© 2025 OCTelligence AI Systems | Graduation Project | Medical Imaging Division")
-with f2:
-    st.caption("Status: 🔌 Hybrid Engine Ready")
+st.caption("© 2025 OCTelligence AI Systems | Medical Imaging Division")
