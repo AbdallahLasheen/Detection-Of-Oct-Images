@@ -3,6 +3,7 @@
 # Model: DenseNet121 + Swin Transformer (Hybrid)
 # Dataset: Kermany2018 (OCT Retinal Scans)
 # ===============================================================
+
 import streamlit as st
 import torch
 import torch.nn as nn
@@ -98,14 +99,24 @@ class OCTelligenceHybrid(nn.Module):
 def load_hybrid_model():
     model = OCTelligenceHybrid(num_classes=4)
     try:
+        # Get the directory where this script is located
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        weights_path = os.path.join(script_dir, "best_hybrid_octelligence.pth")
+        
+        # Check if file exists
+        if not os.path.exists(weights_path):
+            st.error(f"❌ Model weights not found at: {weights_path}")
+            st.info("Please ensure 'best_hybrid_octelligence.pth' is in the same folder as Main.py")
+            return None
+        
         # Loading weights to CPU for universal compatibility
-        weights_path = "best_hybrid_octelligence.pth"
         state_dict = torch.load(weights_path, map_location=torch.device('cpu'))
         model.load_state_dict(state_dict)
         model.eval()
+        st.success("✅ Model loaded successfully!")
         return model
     except Exception as e:
-        st.error(f"Critical Error: Could not load weights. {e}")
+        st.error(f"❌ Critical Error: Could not load weights. {e}")
         return None
 
 model = load_hybrid_model()
