@@ -117,16 +117,41 @@ CLASS_DESC = {
     'NORMAL': "Healthy Retinal structure detected. No visible pathologies."
 }
 
-# 5️⃣ Preprocessing Function
-def preprocess_image(image):
-    # Ensure image is converted to RGB (3 channels) even if grayscale
-    tfms = transforms.Compose([
+# 5️⃣ Image Preprocessing Function
+def preprocess_image(pil_image):
+    """Preprocess PIL image for model inference"""
+    transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.Grayscale(num_output_channels=3),
         transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                           std=[0.229, 0.224, 0.225])
     ])
-    return tfms(image).unsqueeze(0)
+    tensor = transform(pil_image)
+    return tensor.unsqueeze(0)  # Add batch dimension
+
+# 6️⃣ Batch Processing Function
+def process_batch_images(images_list):
+    """Process multiple images and return results"""
+    results = []
+    for img in images_list:
+        try:
+            input_tensor = preprocess_image(img)
+            with torch.no_grad():
+                outputs = model(input_tensor)
+                probs = torch.nn.functional.softmax(outputs[0], dim=0)
+                conf, idx = torch.max(probs, 0)
+            
+            result = {
+                'class': CLASS_NAMES[idx],
+                'confidence': conf.item() * 100,
+                'probabilities': probs.numpy()
+            }
+            results.append(result)
+        except Exception as e:
+            results.append({'error': str(e)})
+    
+    return results
 
 # 6️⃣ Sidebar - System Stats
 with st.sidebar:
@@ -152,66 +177,177 @@ with tab1:
     
     with col_up:
         st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
-        st.subheader("📤 Scan Upload")
-        uploaded_file = st.file_uploader("Upload Retinal Scan (JPG/PNG)", type=["jpg", "png", "jpeg"])
-        if uploaded_file:
-            img = Image.open(uploaded_file).convert("RGB")
-            st.image(img, caption="Patient OCT Scan", use_container_width=True)
+        st.subheader("📤 Select Multiple Scans")
+        uploaded_files = st.file_uploader(
+            "Upload Multiple Retinal Scans (JPG/PNG)", 
+            type=["jpg", "png", "jpeg"],
+            accept_multiple_files=True
+        )
+        
+        if uploaded_files:
+            st.success(f"✅ Selected {len(uploaded_files)} images")
+            # Preview grid
+            st.subheader("Preview")
+            preview_cols = st.columns(min(3, len(uploaded_files)))
+            for idx, uploaded_file in enumerate(uploaded_files[:3]):
+                with preview_cols[idx]:
+                    img = Image.open(uploaded_file).convert("RGB")
+                    st.image(img, caption=uploaded_file.name, use_container_width=True)
+            
+            if len(uploaded_files) > 3:
+                st.caption(f"...and {len(uploaded_files) - 3} more images")
+        
         st.markdown("</div>", unsafe_allow_html=True)
 
     with col_res:
-        if uploaded_file:
-            if st.button("EXECUTE HYBRID DIAGNOSIS"):
-                with st.spinner('Fusing CNN & Transformer Features...'):
-                    input_tensor = preprocess_image(img)
-                    with torch.no_grad():
-                        outputs = model(input_tensor)
-                        probs = torch.nn.functional.softmax(outputs[0], dim=0)
-                        conf, idx = torch.max(probs, 0)
+        if uploaded_files:
+            if st.button("EXECUTE HYBRID DIAGNOSIS", use_container_width=True):
+                with st.spinner('Processing images...'):
+                    # Load all images
+                    images = [Image.open(f).convert("RGB") for f in uploaded_files]
+                    results = process_batch_images(images)
+                    st.session_state['batch_results'] = results
+                    st.session_state['image_files'] = uploaded_files
                     
-                    result = CLASS_NAMES[idx]
-                    score = conf.item() * 100
+                    # Display detailed results
+                    st.subheader("🔍 Diagnostic Results")
+                    cols_per_row = 3
+                    result_cols = st.columns(cols_per_row)
                     
-                    # Store for analysis tab
-                    st.session_state['hybrid_probs'] = probs.numpy()
+                    for i, (result, uploaded_file) in enumerate(zip(results, uploaded_files)):
+                        col_idx = i % cols_per_row
+                        
+                        with result_cols[col_idx]:
+                            if 'error' not in result:
+                                img = Image.open(uploaded_file).convert("RGB")
+                                st.image(img, use_container_width=True)
+                                
+                                diagnosis = result['class']
+                                confidence = result['confidence']
+                                probabilities = result['probabilities']
+                                status_color = "#10b981" if diagnosis == "NORMAL" else "#ef4444"
+                                icon = "✅" if diagnosis == "NORMAL" else "⚠️"
+                                
+                                # Diagnosis Box
+                                st.markdown(f"""
+                                    <div style='background-color: {status_color}; padding: 16px; border-radius: 10px; text-align: center; color: white; margin-bottom: 12px;'>
+                                        <p style='margin: 0; font-size: 12px; opacity: 0.9;'>🩺 DIAGNOSIS</p>
+                                        <p style='margin: 8px 0 0 0; font-size: 20px; font-weight: bold;'>{icon} {diagnosis}</p>
+                                        <p style='margin: 8px 0 0 0; font-size: 13px;'>Confidence: <b>{confidence:.1f}%</b></p>
+                                    </div>
+                                """, unsafe_allow_html=True)
+                                
+                                # Clinical Description
+                                st.markdown(f"""
+                                    <div style='background-color: #f0fdf4; border-left: 4px solid #10b981; padding: 12px; border-radius: 6px; margin-bottom: 12px;'>
+                                        <p style='margin: 0; font-size: 12px; color: #065f46;'><b>📋 Clinical Notes</b></p>
+                                        <p style='margin: 8px 0 0 0; font-size: 11px; color: #047857; line-height: 1.5;'>{CLASS_DESC[diagnosis]}</p>
+                                    </div>
+                                """, unsafe_allow_html=True)
+                            else:
+                                st.error(f"❌ Error: {result['error']}")
+                        
+                        if (i + 1) % cols_per_row == 0 and i + 1 < len(results):
+                            result_cols = st.columns(cols_per_row)
+        else:
+            st.warning("Please upload images to begin diagnosis.")
+
+with tab2:
+    if 'batch_results' in st.session_state:
+        results = st.session_state['batch_results']
+        uploaded_files = st.session_state['image_files']
+        st.subheader("📊 Detailed Analysis & Statistics")
+        
+        total_images = len(results)
+        successful = sum(1 for r in results if 'error' not in r)
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Images", total_images)
+        col2.metric("Successfully Processed", successful)
+        col3.metric("Errors", total_images - successful)
+        
+        st.markdown("---")
+        
+        # Overall probability distribution
+        if successful > 0:
+            st.subheader("Overall Probability Distribution")
+            aggregated_probs = [0] * len(CLASS_NAMES)
+            
+            for result in results:
+                if 'error' not in result:
+                    for i, prob in enumerate(result['probabilities']):
+                        aggregated_probs[i] += prob
+            
+            aggregated_probs = [p / successful for p in aggregated_probs]
+            
+            df_chart = pd.DataFrame({
+                'Condition': CLASS_NAMES,
+                'Average Probability (%)': [p * 100 for p in aggregated_probs]
+            })
+            
+            fig = px.bar(df_chart, x='Condition', y='Average Probability (%)', 
+                         text_auto='.2f', color='Condition',
+                         color_discrete_map={'NORMAL': '#10b981', 'CNV': '#f59e0b', 'DME': '#3b82f6', 'DRUSEN': '#ef4444'},
+                         template='plotly_white')
+            
+            fig.update_layout(showlegend=False, height=500, title_x=0.5)
+            st.plotly_chart(fig, use_container_width=True, key="aggregate_chart")
+        
+        st.markdown("---")
+        st.subheader("🔍 Individual Image Analysis")
+        
+        # Display each image with its detailed analysis
+        for i, (result, uploaded_file) in enumerate(zip(results, uploaded_files)):
+            if 'error' not in result:
+                col1, col2 = st.columns([1, 1])
+                
+                with col1:
+                    img = Image.open(uploaded_file).convert("RGB")
+                    st.image(img, use_container_width=True)
                     
-                    # Colors based on health status
-                    status_color = "#10b981" if result == "NORMAL" else "#ef4444"
+                with col2:
+                    diagnosis = result['class']
+                    confidence = result['confidence']
+                    probabilities = result['probabilities']
+                    status_color = "#10b981" if diagnosis == "NORMAL" else "#ef4444"
+                    icon = "✅" if diagnosis == "NORMAL" else "⚠️"
                     
+                    # Diagnosis Box
                     st.markdown(f"""
-                        <div class='metric-card'>
-                            <h3 style='color: #1e293b;'>Diagnostic Result</h3>
-                            <div class='res-box' style='background-color: {status_color};'>
-                                {result}
-                            </div>
-                            <div style='margin-top: 20px; border-left: 4px solid {status_color}; padding-left: 15px;'>
-                                <p style='font-size: 14px; color: #475569;'><b>Clinical Description:</b><br>{CLASS_DESC[result]}</p>
-                            </div>
+                        <div style='background-color: {status_color}; padding: 16px; border-radius: 10px; text-align: center; color: white; margin-bottom: 12px;'>
+                            <p style='margin: 0; font-size: 12px; opacity: 0.9;'>🩺 DIAGNOSIS</p>
+                            <p style='margin: 8px 0 0 0; font-size: 20px; font-weight: bold;'>{icon} {diagnosis}</p>
+                            <p style='margin: 8px 0 0 0; font-size: 13px;'>Confidence: <b>{confidence:.1f}%</b></p>
                         </div>
                     """, unsafe_allow_html=True)
                     
-                    st.metric("Detection Confidence", f"{score:.2f}%", delta="Hybrid Confirmed")
-        else:
-            st.warning("Please upload a retinal scan to begin the diagnostic process.")
-
-with tab2:
-    if 'hybrid_probs' in st.session_state:
-        st.subheader("Diagnostic Probability Analysis")
-        current_probs = st.session_state['hybrid_probs']
-        df_chart = pd.DataFrame({
-            'Condition': CLASS_NAMES,
-            'Probability (%)': current_probs * 100
-        })
-        
-        fig = px.bar(df_chart, x='Condition', y='Probability (%)', 
-                     text_auto='.2f', color='Condition',
-                     color_discrete_map={'NORMAL': '#10b981', 'CNV': '#f59e0b', 'DME': '#3b82f6', 'DRUSEN': '#ef4444'},
-                     template='plotly_white')
-        
-        fig.update_layout(showlegend=False, height=500, title_x=0.5)
-        st.plotly_chart(fig, use_container_width=True)
+                    # Clinical Description
+                    st.markdown(f"""
+                        <div style='background-color: #f0fdf4; border-left: 4px solid #10b981; padding: 12px; border-radius: 6px; margin-bottom: 12px;'>
+                            <p style='margin: 0; font-size: 12px; color: #065f46;'><b>📋 Clinical Notes</b></p>
+                            <p style='margin: 8px 0 0 0; font-size: 11px; color: #047857; line-height: 1.5;'>{CLASS_DESC[diagnosis]}</p>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Probability Table
+                    prob_data = {
+                        'Condition': CLASS_NAMES,
+                        'Probability': [f"{p*100:.2f}%" for p in probabilities]
+                    }
+                    df_prob = pd.DataFrame(prob_data)
+                    st.dataframe(df_prob, use_container_width=True, hide_index=True)
+                
+                # Bar Chart
+                fig = px.bar(y=probabilities*100, x=CLASS_NAMES, 
+                            orientation='v', 
+                            color=CLASS_NAMES,
+                            color_discrete_sequence=['#ef4444', '#ef4444', '#ef4444', '#10b981'],
+                            labels={'y': 'Probability (%)', 'x': 'Condition'})
+                fig.update_layout(height=400, margin=dict(l=0, r=0, t=0, b=0))
+                st.plotly_chart(fig, use_container_width=True, key=f"analysis_chart_{i}")
+                st.markdown("---")
     else:
-        st.info("Once a diagnosis is performed, statistical data will appear here.")
+        st.info("Once batch diagnosis is performed, statistical data will appear here.")
 
 with tab3:
     st.markdown("""
