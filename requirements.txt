@@ -5,3 +5,4 @@ timm
 pillow
 pandas
 plotly
+tkinter
